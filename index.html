@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SN快速扫描核对工具</title>
+    <style>
+        body { font-family: sans-serif; margin: 0; padding: 15px; background: #f4f6f9; color: #333; }
+        h2 { text-align: center; color: #2c3e50; }
+        .card { background: #fff; padding: 15px; border-radius: 8px; margin-bottom: 15px; box-shadow: 0 2px 5px rgba(0,0,0,0.05); }
+        input, button { width: 100%; padding: 12px; margin-top: 5px; margin-bottom: 10px; box-sizing: border-box; border: 1px solid #ddd; border-radius: 4px; font-size: 16px; }
+        button { background: #3498db; color: white; border: none; font-weight: bold; cursor: pointer; }
+        button:active { background: #2980b9; }
+        .btn-success { background: #2ecc71; }
+        .btn-danger { background: #e74c3c; }
+        table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 14px; }
+        th, td { border: 1px solid #ddd; padding: 8px; text-align: center; }
+        th { background: #f8f9fa; }
+        .match { background-color: #ffcccc !important; color: #c0392b; font-weight: bold; }
+        .normal { background-color: #e8f8f5 !important; color: #27ae60; }
+        #status-box { padding: 15px; text-align: center; font-size: 18px; font-weight: bold; border-radius: 6px; margin-bottom: 15px; display: none; }
+        .sync-status { font-size: 12px; color: #7f8c8d; text-align: right; margin-top: -5px; margin-bottom: 10px; }
+    </style>
+</head>
+<body>
+
+    <h2>SN 扫描核对工具</h2>
+
+    <!-- 第一步：工人只需输入姓名 -->
+    <div class="card" id="setup-card">
+        <h3>欢迎使用，请先登录</h3>
+        <label>操作人姓名：</label>
+        <input type="text" id="operator" placeholder="请输入您的名字" autofocus>
+        <button class="btn-success" onclick="initSystem()">进入扫描界面</button>
+    </div>
+
+    <!-- 第二步：扫描区 -->
+    <div class="card" id="scan-card" style="display:none;">
+        <h3>扫码录入区</h3>
+        <p>当前操作人：<span id="display-operator" style="font-weight:bold; color:#e67e22;"></span> | 目标库总量：<span id="count-target">0</span></p>
+        
+        <div id="status-box">准备就绪</div>
+        <div class="sync-status" id="sync-tip">☁️ 状态：准备同步</div>
+
+        <label>请扫描或输入 SN：</label>
+        <input type="text" id="sn-input" placeholder="光标点在此处，用扫码枪扫码..." autofocus>
+        <button onclick="handleScan()">提交 SN</button>
+        <button class="btn-danger" onclick="resetSystem()">退出/换操作人</button>
+    </div>
+
+    <!-- 第三步：实时记录表格 -->
+    <div class="card" id="table-card" style="display:none;">
+        <h3>本次扫描记录（实时同步至 Google Sheet）</h3>
+        <div style="max-height: 250px; overflow-y: auto;">
+            <table id="record-table">
+                <thead>
+                    <tr>
+                        <th>时间</th>
+                        <th>SN</th>
+                        <th>状态</th>
+                    </tr>
+                </thead>
+                <tbody id="record-body">
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+<script>
+    // ==========================================
+    // 【后台配置区】：在此处配置好后，工人无需接触
+    // ==========================================
+    const SCRIPT_URL = "https://script.google.com/macros/s/AKfycbwUgRJtoQNP9TsSecevqwsv9i-Y6gbiTkFFps_VVbGSAKGpimEk49JA0ldcV_1B7Ugr/exec"; 
+
+    // 在这里粘贴你的 1621 个 SN（每行一个，或者用逗号隔开）
+    const RAW_TARGET_SNS = `
+    E21200107014
+    DC2901201860
+    E21200103211
+    `;
+    // ==========================================
+
+    let targetSet = new Set();
+    let operatorName = "";
+
+    // 初始化加载目标SN
+    function loadTargetData() {
+        let items = RAW_TARGET_SNS.split(/[\s,\n]+/).filter(item => item.length > 0);
+        targetSet = new Set(items);
+    }
+
+    function playAlarm() {
+        try {
+            const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            const oscillator = audioCtx.createOscillator();
+            const gainNode = audioCtx.createGain();
+            oscillator.type = 'sawtooth';
+            oscillator.frequency.setValueAtTime(800, audioCtx.currentTime);
+            oscillator.frequency.setValueAtTime(400, audioCtx.currentTime + 0.15);
+            gainNode.gain.setValueAtTime(1, audioCtx.currentTime);
+            oscillator.connect(gainNode);
+            gainNode.connect(audioCtx.destination);
+            oscillator.start();
+            oscillator.stop(audioCtx.currentTime + 0.3);
+        } catch (e) {
+            console.log("音频播放失败", e);
+        }
+    }
+
+    function initSystem() {
+        operatorName = document.getElementById('operator').value.trim();
+        if (!operatorName) { 
+            alert('请输入您的姓名才能开始！'); 
+            return; 
+        }
+
+        loadTargetData();
+
+        document.getElementById('display-operator').innerText = operatorName;
+        document.getElementById('count-target').innerText = targetSet.size;
+
+        document.getElementById('setup-card').style.display = 'none';
+        document.getElementById('scan-card').style.display = 'block';
+        document.getElementById('table-card').style.display = 'block';
+        document.getElementById('sn-input').focus();
+    }
+
+    document.getElementById('sn-input').addEventListener('keypress', function (e) {
+        if (e.key === 'Enter') {
+            handleScan();
+        }
+    });
+
+    async function handleScan() {
+        let inputField = document.getElementById('sn-input');
+        let sn = inputField.value.trim();
+        if (!sn) return;
+
+        // 获取格式化的年月日时分秒 (例如: 2026-10-16 10:45:31)
+        let now = new Date();
+        let year = now.getFullYear();
+        let month = String(now.getMonth() + 1).padStart(2, '0');
+        let day = String(now.getDate()).padStart(2, '0');
+        let hours = String(now.getHours()).padStart(2, '0');
+        let minutes = String(now.getMinutes()).padStart(2, '0');
+        let seconds = String(now.getSeconds()).padStart(2, '0');
+        let timeStr = `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
+
+        // 逻辑修改：在列表中 = 不良；不在列表中 = 合格
+        let isMatch = targetSet.has(sn);
+        let statusText = isMatch ? '不良' : '合格';
+
+        let statusBox = document.getElementById('status-box');
+        let syncTip = document.getElementById('sync-tip');
+        statusBox.style.display = 'block';
+
+        if (isMatch) {
+            playAlarm();
+            statusBox.className = 'match';
+            statusBox.innerHTML = `⚠️ 命中列表 【不良】: ${sn}`;
+        } else {
+            statusBox.className = 'normal';
+            statusBox.innerHTML = `✅ 未命中列表 【合格】: ${sn}`;
+        }
+
+        // 界面实时加一行
+        let tbody = document.getElementById('record-body');
+        let tr = document.createElement('tr');
+        tr.className = isMatch ? 'match' : '';
+        tr.innerHTML = `<td>${timeStr}</td><td>${sn}</td><td>${statusText}</td>`;
+        tbody.insertBefore(tr, tbody.firstChild);
+
+        // 清空输入框以便下一次扫描
+        inputField.value = '';
+        inputField.focus();
+
+        // 异步同步到 Google Sheet
+        syncTip.innerText = "☁️ 状态：正在同步到 Google Sheet...";
+        try {
+            await fetch(SCRIPT_URL, {
+                method: 'POST',
+                mode: 'no-cors',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    time: timeStr,
+                    operator: operatorName,
+                    sn: sn,
+                    status: statusText
+                })
+            });
+            syncTip.innerText = "☁️ 状态：已实时同步到 Google Sheet";
+        } catch (e) {
+            syncTip.innerText = "⚠️ 状态：同步失败，请检查网络";
+            console.error(e);
+        }
+    }
+
+    function resetSystem() {
+        if (confirm('确定要退出当前账号吗？')) {
+            location.reload();
+        }
+    }
+</script>
+
+</body>
+</html>
